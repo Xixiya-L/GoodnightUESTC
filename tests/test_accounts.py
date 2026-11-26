@@ -100,12 +100,84 @@ class AccountIsolation(unittest.TestCase):
         self.assertTrue(response.json['profile']['ready'])
         self.assertEqual(response.json['profile']['name'],'正式账号')
 
+    def test_school_login_can_be_saved_without_claiming_checkin_ready(self):
+        a,_=self.profile('本人')
+        self.assertEqual(self.post('/api/accounts/'+a+'/save',
+            {'name':'本人','login_only':True}).status_code,400)
+        local=self.app.extensions['account_children'][a].extensions['local_store']
+        local.save_session({'student_id':'202300000001','saved_at':123,
+                            'user_agent':'Synthetic','cookies':[]})
+        response=self.post('/api/accounts/'+a+'/save',{'name':'本人','login_only':True})
+        self.assertEqual(response.status_code,200,response.json)
+        self.assertTrue(response.json['profile']['login_saved'])
+        self.assertFalse(response.json['profile']['saved'])
+        self.assertFalse(response.json['profile']['ready'])
+        self.assertFalse(response.json['profile']['wechatSaved'])
+        self.assertEqual(self.active_post(a,'checkin/prepare',{},self.active_get(a).json['csrf']).status_code,409)
+
     def active_get(self, profile, action='status'):
         return self.client.get('/api/'+action,base_url=BASE,headers={'X-Account-ID':profile})
 
     def active_post(self, profile, action, value, token):
         return self.client.post('/api/'+action,json=value,base_url=BASE,
             headers={'Origin':BASE,'X-CSRF-Token':token,'X-Account-ID':profile})
+
+    def test_unified_login_passes_credentials_to_selected_profile(self):
+        from unittest.mock import patch
+        a,_=self.profile('本人');b,_=self.profile('另一账号')
+        token=self.active_get(a).json['csrf']
+        login_a=self.app.extensions['account_children'][a].extensions['browser_login']
+        login_b=self.app.extensions['account_children'][b].extensions['browser_login']
+        value={'student_id':'202300000001','password':'synthetic-密码'}
+        with patch.object(login_a,'start') as start_a, patch.object(login_b,'start') as start_b:
+            response=self.active_post(a,'login',value,token)
+        self.assertEqual(response.status_code,202,response.json)
+        start_a.assert_called_once_with(value['student_id'],value['password'],browser='chrome')
+        start_b.assert_not_called()
+
+    def test_unified_saved_account_can_log_in_again(self):
+        import json
+        from unittest.mock import patch
+        a,_=self.profile('本人')
+        child=self.app.extensions['account_children'][a]
+        store=child.extensions['local_store']
+        store.save_session({'student_id':'202300000001','saved_at':123,
+                            'user_agent':'Synthetic','cookies':[]})
+        index=store.directory.parent/'index.json'
+        rows=json.loads(index.read_text('utf-8'));rows[0]['saved']=True
+        index.write_text(json.dumps(rows),encoding='utf-8')
+        token=self.active_get(a).json['csrf']
+        with patch.object(child.extensions['browser_login'],'start') as start:
+            response=self.active_post(a,'login',
+                {'student_id':'202300000001','password':'synthetic'},token)
+        self.assertEqual(response.status_code,202,response.json)
+        start.assert_called_once_with('202300000001','synthetic',browser='chrome')
+
+    def test_login_forwards_browser_selection_and_rejects_unknown_browser(self):
+        from unittest.mock import patch
+        a,_=self.profile('本人');token=self.active_get(a).json['csrf']
+        login=self.app.extensions['account_children'][a].extensions['browser_login']
+        with patch.object(login,'start') as start:
+            response=self.active_post(a,'login',
+                {'student_id':'202300000001','password':'synthetic','browser':'edge'},token)
+        self.assertEqual(response.status_code,202,response.json)
+        start.assert_called_once_with('202300000001','synthetic',browser='edge')
+        for browser in ('firefox', '../chrome.exe', None, ['chrome']):
+            with self.subTest(browser=browser):
+                response=self.active_post(a,'login',
+                    {'student_id':'202300000001','password':'synthetic','browser':browser},token)
+                self.assertEqual(response.status_code,400)
+                self.assertEqual(response.json['error'],'请选择 Chrome 或 Edge。')
+
+    def test_unified_login_rejects_missing_password_without_starting_browser(self):
+        from unittest.mock import patch
+        a,_=self.profile('本人');token=self.active_get(a).json['csrf']
+        login=self.app.extensions['account_children'][a].extensions['browser_login']
+        with patch.object(login,'start') as start:
+            response=self.active_post(a,'login',{'student_id':'202300000001'},token)
+        self.assertEqual(response.status_code,400)
+        self.assertEqual(response.json['error'],'请输入学号和密码。')
+        start.assert_not_called()
 
     def test_unified_page_uses_per_profile_store_and_csrf(self):
         a,_=self.profile('甲');b,_=self.profile('乙')

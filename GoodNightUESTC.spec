@@ -1,4 +1,4 @@
-# Build an unpack-and-run Windows directory using installed Microsoft Edge.
+# Build an unpack-and-run Windows directory using installed Chrome or Edge.
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all
 
