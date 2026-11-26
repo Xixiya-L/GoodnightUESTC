@@ -25,7 +25,7 @@ MESSAGES = {
     'operation_ticket_pending': '本次授权已使用或结果待确认，请先查询学校当天记录，不要重复提交。',
     'wechat_busy': '微信授权正在进行，请先完成或取消。',
     'wechat_runtime_required': '请先按使用说明安装独立的微信授权环境。',
-    'wechat_school_session_required': '未找到唯一有效的学校会话，请重新通过 Edge 登录。',
+    'wechat_school_session_required': '未找到唯一有效的学校会话，请重新通过浏览器登录。',
     'wechat_authorization_required': '请先点击微信授权并扫码。',
     'portal_session_rejected': '学校会话已失效，请重新登录。',
     'micro_app_unauthorized': '智慧学工打卡应用未授权，请重新登录并完成页面提示。',
@@ -110,7 +110,8 @@ def create_app(data_dir=None, *, profiles_enabled=True):
         saved = store.session()
         return jsonify(product='GoodNightUESTC', csrf=session['csrf'], mode='manual', schoolWritesEnabled=True,
                        account=({'student_id': saved['student_id'],
-                                 'saved_at': saved['saved_at'], 'cookie_count': len(saved['cookies'])} if saved else None),
+                                 'saved_at': saved['saved_at'], 'cookie_count': len(saved['cookies']),
+                                 'identity': saved.get('school_identity')} if saved else None),
                        location=store.location(), login=login.status(), operation=operation.snapshot(), wechat=wechat.status())
 
     @app.post('/api/wechat/start')
@@ -143,7 +144,7 @@ def create_app(data_dir=None, *, profiles_enabled=True):
         if test_lock.locked() or wechat.status()['active']:
             return jsonify(error='正在执行检查，请稍后再登录。'), 409
         try:
-            login.start(data['student_id'].strip(), data['password'])
+            login.start(data['student_id'].strip(), data['password'], browser=data.get('browser', 'chrome'))
         except ValueError as error:
             return jsonify(error=str(error)), 400
         return jsonify(ok=True, login=login.status()), 202
@@ -245,7 +246,7 @@ def create_app(data_dir=None, *, profiles_enabled=True):
         try:
             snapshot = store.session()
             if not snapshot:
-                return jsonify(error='请先通过 Edge 登录并自动导入 Cookie。'), 400
+                return jsonify(error='请先通过浏览器登录并自动导入 Cookie。'), 400
             with operation.operation('online'):
                 result = online_test(snapshot, store.location(), progress=operation.step)
             return jsonify(ok=True, result=result)

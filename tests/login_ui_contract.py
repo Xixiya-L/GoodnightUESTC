@@ -7,13 +7,15 @@ from browser_login import LOGIN_URL
 from core import browser_allowed
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel='msedge', headless=True)
+    browser = p.chromium.launch(channel='chrome', headless=True)
     try:
         context = browser.new_context(service_workers='block')
         context.route('**/*', lambda route: route.continue_() if route.request.method == 'GET'
                       and browser_allowed('GET', route.request.url) else route.abort())
         page = context.new_page()
         page.goto(LOGIN_URL, wait_until='domcontentloaded', timeout=45000)
+        if not page.locator('input#password:visible').count():
+            page.locator('#userNameLogin_a:visible').first.click(timeout=10000)
         account = page.locator('input#username:visible').first
         password = page.locator('input#password:visible').first
         account.wait_for(timeout=20000)

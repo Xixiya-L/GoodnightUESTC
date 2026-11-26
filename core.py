@@ -23,11 +23,17 @@ from network import RoutingOpener
 READ_PATHS = frozenset({
     '/', '/api/isLoginFailure', '/daily-checkin/checkLogin',
     '/daily-checkin-h5/index.html',
+    '/daily-checkin/api/auth/user-info',
     '/daily-checkin/api/student-checkin-record/today',
     '/daily-checkin/api/checkin-schedule/effective',
     '/daily-checkin/api/checkin-location/available-locations',
     '/daily-checkin/api/map/reverse',
 })
+
+# The official H5 initializes its app session before reading attendance records.
+BROWSER_READ_PATHS = READ_PATHS | {
+    '/daily-checkin/api/user/service-account-subscribed',
+}
 
 
 def allowed_read(method, url):
@@ -45,16 +51,26 @@ def browser_allowed(method, url):
     u = urllib.parse.urlsplit(url)
     if u.scheme in ('about', 'data', 'blob'):
         return True
-    if u.scheme != 'https' or u.hostname not in ('idas.uestc.edu.cn', 'jzsz.uestc.edu.cn'):
+    if u.scheme != 'https':
         return False
     if u.username or u.password or u.port not in (None, 443):
         return False
+    if u.hostname == 'open.weixin.qq.com':
+        return method.upper() in ('GET', 'HEAD') and (
+            u.path == '/connect/qrconnect' or u.path.startswith('/connect/qrcode/'))
+    if u.hostname in ('lp.open.weixin.qq.com', 'long.open.weixin.qq.com'):
+        return method.upper() in ('GET', 'HEAD') and u.path == '/connect/l/qrconnect'
+    if u.hostname == 'res.wx.qq.com':
+        return method.upper() in ('GET', 'HEAD') and u.path.startswith((
+            '/t/wx_fed/', '/a/wx_fed/', '/t/fed_upload/'))
     if u.hostname == 'idas.uestc.edu.cn':
         return u.path.startswith('/authserver/')
+    if u.hostname != 'jzsz.uestc.edu.cn':
+        return False
     if method.upper() not in ('GET', 'HEAD'):
         return False
     if u.path.startswith('/daily-checkin/api/'):
-        return u.path in READ_PATHS
+        return u.path in BROWSER_READ_PATHS
     # Static app resources and portal login routes. Explicitly deny record actions.
     if any(s in u.path.lower() for s in ('/checkin-record/checkin', '/report', '/submit', '/save', '/delete')):
         return False
@@ -154,11 +170,23 @@ def read_today(school):
 
 
 def verify_session(snapshot):
-    """Login only needs an authorized record read, not schedule/fence checks."""
+    """Authenticate independently of role-specific attendance permissions."""
     school = ReadOnlySchool(ReadOnlyTransport(snapshot, timeout=6), {}, lambda: None, emit=lambda *a, **k: None)
-    data = school.today()
-    if not isinstance(data, dict):
-        raise ToolError('invalid_record', 'today')
+    data = school.api('/auth/user-info', stage='user_info')
+    user = data.get('userData') if isinstance(data, dict) else None
+    if not isinstance(user, dict) or not isinstance(user.get('role'), str) or not user['role']:
+        raise ToolError('invalid_user_info', 'user_info')
+    types = user.get('studentIdentityTypes') or []
+    if not isinstance(types, list) or not all(isinstance(value, str) for value in types):
+        raise ToolError('invalid_user_info', 'user_info')
+    mode = 'other'
+    if user['role'] == '001':
+        mode = ('group_filling' if 'CLASS_CADRE' in types else
+                'fill_out_today' if 'SAFETY_OFFICER' in types else
+                'group_member' if 'GROUP_MEMBER' in types else 'individual')
+    elif user['role'] == 'lJmw':
+        mode = 'fill_out_today'
+    return {'checkin_mode': mode, 'can_self_checkin': mode == 'individual'}
 
 
 def online_test(snapshot, location, *, progress=lambda message: None):

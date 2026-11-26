@@ -1,5 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const browserLabel=()=>$('login-browser').value==='edge'?'Edge':'Chrome';
+function updateBrowserLabels(){$('login-button').textContent=`用 ${browserLabel()} 登录并导入 ↗`;$('browser-help').textContent=`将在独立 ${browserLabel()} 窗口中填写账号密码。验证码、短信验证请在该窗口完成，完成后会话自动加密保存。`;}
+$('login-browser').addEventListener('change',updateBrowserLabels);
 const activeAccount = new URLSearchParams(location.search).get('account') || '';
 let accountLibrary = [], accountAuthBusy = false;
 
@@ -22,12 +25,12 @@ async function libraryApi(path, data) {
 async function loadAccountLibrary(){
   const result=await libraryApi('/api/accounts');accountLibrary=result.profiles;
   const select=$('saved-account');select.replaceChildren(new Option('临时账号（尚未选择账号库）',''));
-  for(const p of accountLibrary)select.add(new Option(`${p.student_id||'待登录'} · ${p.name}${p.saved===false?'（草稿）':''}`,p.id));
+  for(const p of accountLibrary)select.add(new Option(`${p.student_id||'待登录'} · ${p.name}${p.saved===false?(p.login_saved?'（已保存登录）':'（草稿）'):''}`,p.id));
   select.value=activeAccount;
   const chosen=accountLibrary.find(p=>p.id===activeAccount);
   if(activeAccount&&!chosen)throw new Error('所选账号不存在，请重新选择。');
   if(chosen)$('account-name').value=chosen.name;
-  $('library-message').textContent=chosen?`${chosen.saved===false?'正在配置新草稿':'正在使用已存账号'}：${chosen.student_id||chosen.name}。下方操作只更新这个账号。`:'可以新建账号，或将当前临时账号完成授权后保存到库。';
+  $('library-message').textContent=chosen?`${chosen.saved===false?(chosen.login_saved?'已保存学校登录':'正在配置新草稿'):'正在使用已存账号'}：${chosen.student_id||chosen.name}。下方操作只更新这个账号。`:'可以新建账号，或将当前临时账号完成授权后保存到库。';
 }
 function navigateAccount(id){if(accountAuthBusy||submitting)throw new Error('请先完成或取消当前操作，再切换账号。');location.assign(id?'/?account='+encodeURIComponent(id):'/');}
 $('saved-account').onchange=()=>{try{navigateAccount($('saved-account').value);}catch(e){$('saved-account').value=activeAccount;toast(e.message);}};
@@ -35,11 +38,13 @@ $('reload-accounts').onclick=()=>loadAccountLibrary().catch(e=>toast(e.message))
 $('new-account').onclick=async()=>{try{if(accountAuthBusy||submitting)throw new Error('请先完成或取消当前操作。');const r=await libraryApi('/api/accounts',{name:'新账号'});navigateAccount(r.profile.id);}catch(e){toast(e.message);}};
 $('save-account').onclick=async()=>{try{
   if(accountAuthBusy||submitting)throw new Error('请先完成当前授权或提交。');
-  if(dirtyLocation())throw new Error('请先保存所选账号的实际位置。');
+  const state=await api('/api/status');
+  const complete=Boolean(state.location&&state.wechat?.hasCredentials);
+  if(complete&&dirtyLocation())throw new Error('请先保存所选账号的实际位置。');
   let id=activeAccount;
   if(!id)id=(await libraryApi('/api/accounts/import-current',{})).profile.id;
-  const r=await libraryApi('/api/accounts/'+id+'/save',{name:$('account-name').value.trim()||$('student-id').value.trim()||'本人账号'});
-  toast('账号资料已保存；没有提交签到。');if(id!==activeAccount)navigateAccount(id);else await loadAccountLibrary();
+  const r=await libraryApi('/api/accounts/'+id+'/save',{name:$('account-name').value.trim()||$('student-id').value.trim()||'本人账号',...(!complete?{login_only:true}:{})});
+  toast(complete?'账号资料已保存。':'学校登录信息已加密保存在本机。');if(id!==activeAccount)navigateAccount(id);else await loadAccountLibrary();
 }catch(e){toast(e.message);}};
 function inverse(lat,lng){ // Invert the forward GCJ transform for map display only.
   const a=6378245,ee=.00669342162296594323,pi=Math.PI;
@@ -64,6 +69,8 @@ function dirtyLocation(){if(!$('latitude').value||!$('longitude').value)return t
 async function refresh(){
   if(refreshInFlight)return;refreshInFlight=true;try{
   const r=await api('/api/status');csrf=r.csrf;
+  const identity=r.account?.identity;
+  const identityMessage=identity?.checkin_mode==='group_member'?'已登录；学校当前将此账号识别为群组成员，个人签到尚不可用。':'';
   const wx=r.wechat;
   if(wx){$('wechat-message').textContent=wx.message+(wx.apiCode!==undefined?'（业务码 '+wx.apiCode+'）':'');
     $('wechat-start').disabled=wx.active||!r.account||!wx.runtimeReady||submitting;
@@ -73,19 +80,21 @@ async function refresh(){
     if(!wx.runtimeReady)$('wechat-message').textContent='微信授权环境未安装，请查看使用说明。';
   }
   const active=['opening','waiting','verifying'].includes(r.login.state);loginBusy=active;
+  if(active&&r.login.browser&&$('login-browser').value!==r.login.browser){$('login-browser').value=r.login.browser;updateBrowserLabels();}
   accountAuthBusy=active||submitting||Boolean(wx&&wx.active);
   $('saved-account').disabled=accountAuthBusy;$('new-account').disabled=accountAuthBusy;
-  $('save-account').disabled=accountAuthBusy||!r.account||!r.location||!Boolean(wx&&wx.hasCredentials);
+  $('save-account').disabled=accountAuthBusy||!r.account;
+  $('save-account').textContent=r.account&&(!r.location||!Boolean(wx&&wx.hasCredentials))?'保存学校登录':'保存 / 更新到账号库';
   if(activeAccount&&r.account&&!$('student-id').value)$('student-id').value=r.account.student_id;
   $('student-id').readOnly=Boolean(activeAccount&&r.account&&accountLibrary.find(p=>p.id===activeAccount)?.saved!==false);
 
-  $('login-button').disabled=active;$('cancel-login').hidden=!active;
-  $('login-button').textContent=active?(r.login.state==='verifying'?'正在验证学校会话…':'等待学校登录完成…'):'用 Edge 登录并导入 ↗';
+  $('login-button').disabled=active;$('cancel-login').hidden=!active;$('login-browser').disabled=active;
+  $('login-button').textContent=active?(r.login.state==='verifying'?'正在验证学校会话…':'等待学校登录完成…'):`用 ${browserLabel()} 登录并导入 ↗`;
   $('session-badge').textContent=r.account?'已保存':active?'登录中':'未登录';$('session-badge').className='badge'+(r.account?' green':'');
   $('account-dot').classList.toggle('active',Boolean(r.account));
   $('account-label').textContent=r.account?`${r.account.student_id} · ${r.account.cookie_count} 个会话 Cookie`:'等待导入学校账号';
-  $('login-message').textContent=r.login.state==='idle'&&r.account?'已保存会话，运行在线检查可验证是否有效。':r.login.message+(active&&r.login.elapsed!==undefined?`（已用 ${Math.floor(r.login.elapsed)} 秒）`:'');
-  if(r.login.state==='success'&&refresh.previous!=='success')toast('Cookie 已自动导入，可进行在线只读检查。');refresh.previous=r.login.state;
+  $('login-message').textContent=identityMessage&&!active?identityMessage:r.login.state==='idle'&&r.account?'已保存会话，运行在线检查可验证是否有效。':r.login.message+(active&&r.login.elapsed!==undefined?`（已用 ${Math.floor(r.login.elapsed)} 秒）`:'');
+  if(r.login.state==='success'&&refresh.previous!=='success')toast(identityMessage||'Cookie 已自动导入，可进行在线只读检查。');refresh.previous=r.login.state;
   if(!refresh.initialized){fillLocation(r.location,false);refresh.initialized=true;}
   $('prepare-checkin').disabled=!r.account||!savedLocation||active||submitting||Boolean(wx&&wx.active);
   const op=r.operation;const working=op&&op.active;
@@ -106,7 +115,7 @@ function renderResult(result){
   for(const [label,value] of values){const box=document.createElement('div');box.className='metric';const span=document.createElement('span'),strong=document.createElement('strong');span.textContent=label;strong.textContent=value;box.append(span,strong);$('result-summary').append(box);}
 }
 async function runTest(mode){const button=$(mode);const label=button.innerHTML;button.disabled=true;button.textContent=mode==='online'?'正在读取学校记录…':'正在运行离线自检…';try{if(mode==='online'&&dirtyLocation())throw new Error('请先选择并保存实际位置。');const r=await api('/api/test/'+mode,{});renderResult(r.result);}catch(e){toast(e.message);$('result').hidden=false;$('result').classList.add('error');$('result-title').textContent=e.message;$('result-summary').replaceChildren();$('result-json').textContent='未提交任何打卡或报告记录。';$('result-time').textContent='';}finally{button.disabled=false;button.innerHTML=label;}}
-$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent='正在打开 Edge…';const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;$('login-button').textContent='用 Edge 登录并导入 ↗';}});
+$('login-form').addEventListener('submit',async e=>{e.preventDefault();$('login-button').disabled=true;$('login-button').textContent=`正在打开 ${browserLabel()}…`;const password=$('password').value;try{await api('/api/login',{student_id:$('student-id').value.trim(),password,browser:$('login-browser').value});await refresh();}catch(e){toast(e.message);$('login-button').disabled=false;updateBrowserLabels();}});
 $('show-password').addEventListener('click',()=>{const hide=$('password').type==='password';$('password').type=hide?'text':'password';$('show-password').textContent=hide?'隐藏':'显示';});
 $('cancel-login').addEventListener('click',async()=>{try{await api('/api/login/cancel',{});toast('已请求取消，窗口稍后关闭。');}catch(e){toast(e.message);}});
 $('forget').addEventListener('click',async()=>{try{await api('/api/session/forget',{});await refresh();toast('本机会话已清除。');}catch(e){toast(e.message);}});

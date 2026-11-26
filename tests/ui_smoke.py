@@ -1,4 +1,4 @@
-"""Exercise the localhost UI in Edge; never log in or submit to school."""
+"""Exercise the localhost UI in Chrome; never log in or submit to school."""
 import json
 import re
 from pathlib import Path
@@ -25,7 +25,7 @@ def main():
         server = create_server(create_app(data), host='127.0.0.1', port=8091, threads=4)
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
-        browser = p.chromium.launch(channel='msedge', headless=True)
+        browser = p.chromium.launch(channel='chrome', headless=True)
         try:
             page = browser.new_page(viewport={'width': 1440, 'height': 1200}, device_scale_factor=1)
             page.on('pageerror', lambda error: errors.append(str(error)))
@@ -104,7 +104,7 @@ def main():
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             page.screenshot(path=str(ROOT/'preview-mobile.png'), full_page=True)
             assert not errors, errors
-            print('Edge UI PASS: map, saved location, offline test, mocked confirmation, mobile; real school writes=0')
+            print('Chrome UI PASS: map, saved location, offline test, mocked confirmation, mobile; real school writes=0')
         finally:
             browser.close()
             server.close()

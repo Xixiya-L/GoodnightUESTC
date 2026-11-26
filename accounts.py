@@ -4,6 +4,7 @@ import re
 import threading
 import uuid
 import time
+from io import BytesIO
 from pathlib import Path
 from flask import jsonify, request, send_from_directory, redirect
 from werkzeug.wrappers import Response
@@ -87,6 +88,14 @@ def install_accounts(app, store, root, factory):
                 if child.extensions['wechat_authorization'].status()['active'] or (login.thread and login.thread.is_alive()):
                     return jsonify(error='请先完成当前学校登录或微信授权。'), 409
             record = summary(target)
+            if value.get('login_only') is True:
+                if not record['schoolSessionSaved']:
+                    return jsonify(error='请先完成学校登录，再保存登录信息。'), 400
+                target.update(name=name.strip(), login_saved=True, updated_at=time.time())
+                temp = directory / 'index.new'
+                temp.write_text(json.dumps(profiles, ensure_ascii=False), encoding='utf-8')
+                temp.replace(index)
+                return jsonify(profile=summary(target), ok=True)
             if not all(record[k] for k in ('schoolSessionSaved', 'wechatSaved', 'locationSaved')):
                 return jsonify(error='请先完成学校登录、微信授权和位置保存，再添加到账号库。'), 400
             if target.get('saved') is False and not record.get('verifiedAt'):
@@ -147,6 +156,11 @@ def install_accounts(app, store, root, factory):
         environ = dict(request.environ)
         environ['PATH_INFO'] = '/api/' + action
         environ['SCRIPT_NAME'] = ''
+        # Login validation above has already consumed the original WSGI stream.
+        # Give the isolated app its own stream from Flask's cached request body.
+        body = request.get_data()
+        environ['wsgi.input'] = BytesIO(body)
+        environ['CONTENT_LENGTH'] = str(len(body))
         return Response.from_app(child, environ)
 
     app.extensions['active_account_router'] = active_account
